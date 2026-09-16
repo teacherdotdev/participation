@@ -2,7 +2,7 @@
 // (local click-through with scripts/mock-broker.mjs). Vite replaces the env check at build time, so
 // none of this ships when the flag is unset.
 
-import type { Gradebook, PickedSpreadsheet, Student } from './types'
+import { DEFAULT_BEHAVIORS, type Behavior, type BehaviorDraft, type Gradebook, type PickedSpreadsheet, type Student } from './types'
 import { defaultGrades } from './sheets'
 
 export const FAKE_GOOGLE = import.meta.env.VITE_FAKE_GOOGLE === 'true'
@@ -16,6 +16,15 @@ const ROSTER = EMPTY_ROSTER
 const SHEET: PickedSpreadsheet = { id: 'fake-sheet-id', name: 'Period 3 Participation', url: '#' }
 
 let students: Student[] | null = null
+// The fake sheet pretends the built-in behaviors have been graded on earlier days, so removing
+// one archives it; anything added during the session has no history and deletes outright.
+let behaviors: Behavior[] = DEFAULT_BEHAVIORS.map(({ name, emoji, description }) => ({
+  name,
+  emoji,
+  description,
+  archived: false,
+  hasHistory: true,
+}))
 
 export function fakePickSpreadsheet(): Promise<PickedSpreadsheet | null> {
   const ok = window.confirm(`[Fake Google Picker]\n\nPick “${SHEET.name}”?\n\nCancel simulates closing the picker.`)
@@ -37,7 +46,7 @@ export async function fakeLoadGradebook(spreadsheetId: string): Promise<Gradeboo
     name,
     initials: name.split(' ').map((part) => part[0]).join(''),
     row: index + 2,
-    grades: defaultGrades(),
+    grades: defaultGrades(behaviors),
   }))
   const today = todayLabel()
   return {
@@ -46,7 +55,9 @@ export async function fakeLoadGradebook(spreadsheetId: string): Promise<Gradeboo
     timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone,
     dayKey: today.key,
     dayLabel: today.label,
-    students: students.map((student) => ({ ...student, grades: { ...student.grades } })),
+    sheetId: 0,
+    behaviors: behaviors.map((behavior) => ({ ...behavior })),
+    students: students.map((student) => ({ ...student, grades: [...student.grades] })),
   }
 }
 
@@ -59,7 +70,7 @@ export async function fakeAddStudents(spreadsheetId: string, names: string[]): P
       name,
       initials: name.split(' ').map((part) => part[0]).join(''),
       row: students!.length + 2,
-      grades: defaultGrades(),
+      grades: defaultGrades(behaviors),
     })
   })
 }
@@ -77,4 +88,30 @@ export async function fakeUpdateGrade(student: Student): Promise<number> {
   if (index < 0 || !students) throw new Error('No such student in the fake sheet.')
   students[index] = { ...student, row: index + 2 }
   return index + 2
+}
+
+export async function fakeRenameBehavior(index: number, draft: BehaviorDraft): Promise<void> {
+  await new Promise((resolve) => setTimeout(resolve, 250))
+  behaviors[index] = { ...behaviors[index], ...draft }
+}
+
+export async function fakeAddBehavior(draft: BehaviorDraft): Promise<void> {
+  await new Promise((resolve) => setTimeout(resolve, 300))
+  behaviors = [...behaviors, { ...draft, description: '', archived: false, hasHistory: false }]
+  students?.forEach((student) => student.grades.push(true))
+}
+
+export async function fakeRemoveBehavior(index: number): Promise<void> {
+  await new Promise((resolve) => setTimeout(resolve, 300))
+  if (behaviors[index].hasHistory) {
+    behaviors[index] = { ...behaviors[index], archived: true }
+    return
+  }
+  behaviors = behaviors.filter((_, entry) => entry !== index)
+  students?.forEach((student) => student.grades.splice(index, 1))
+}
+
+export async function fakeRestoreBehavior(index: number): Promise<void> {
+  await new Promise((resolve) => setTimeout(resolve, 250))
+  behaviors[index] = { ...behaviors[index], archived: false }
 }

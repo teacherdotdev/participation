@@ -3,6 +3,7 @@
   import ArrowLeftRight from '@lucide/svelte/icons/arrow-left-right'
   import ArrowUpRight from '@lucide/svelte/icons/arrow-up-right'
   import Check from '@lucide/svelte/icons/check'
+  import ListChecks from '@lucide/svelte/icons/list-checks'
   import ChevronDown from '@lucide/svelte/icons/chevron-down'
   import CopyPlus from '@lucide/svelte/icons/copy-plus'
   import FolderOpen from '@lucide/svelte/icons/folder-open'
@@ -13,6 +14,7 @@
   import Pencil from '@lucide/svelte/icons/pencil'
   import RefreshCw from '@lucide/svelte/icons/refresh-cw'
   import X from '@lucide/svelte/icons/x'
+  import BehaviorsEditor from './BehaviorsEditor.svelte'
   import {
     BrokerError,
     connectDrive,
@@ -40,15 +42,18 @@
     type RememberedSpreadsheet,
   } from './lib/setup'
   import {
+    addBehavior,
     addStudents,
     isAuthorizationError,
     loadGradebook,
     parseRosterNames,
+    removeBehavior,
+    renameBehavior,
     renameSpreadsheet,
-    totalFor,
+    restoreBehavior,
     updateGrade,
   } from './lib/sheets'
-  import { DIMENSIONS, type DimensionKey, type Gradebook, type Grades, type Student } from './lib/types'
+  import { activeBehaviors, totalFor, type BehaviorDraft, type Gradebook, type Grades, type Student } from './lib/types'
 
   type Session = 'checking' | 'signed_out' | 'not_connected' | 'invalid' | 'ready'
 
@@ -82,6 +87,8 @@
   let rosterText = ''
   let rosterOpen = false
   let rosterTextarea: HTMLTextAreaElement | undefined
+  let behaviorsModal: HTMLDialogElement
+  let behaviorsOpen = false
 
   onMount(() => {
     spreadsheet = getRememberedSpreadsheet()
@@ -111,8 +118,10 @@
     syncFullscreen()
   }
 
-  $: classPoints = gradebook?.students.reduce((sum, student) => sum + totalFor(student.grades), 0) ?? 0
-  $: possiblePoints = (gradebook?.students.length ?? 0) * DIMENSIONS.length
+  // Indexes into gradebook.behaviors (and each student's grades) of the behaviors graded today.
+  $: active = gradebook ? activeBehaviors(gradebook.behaviors) : []
+  $: classPoints = gradebook?.students.reduce((sum, student) => sum + totalFor(student.grades, gradebook!.behaviors), 0) ?? 0
+  $: possiblePoints = (gradebook?.students.length ?? 0) * active.length
   $: rosterNames = parseRosterNames(rosterText, gradebook?.students.map((student) => student.name) ?? [])
   // Onboarding is a strict ladder: a step is only actionable once every step above it is done.
   $: signedIn = session !== 'checking' && session !== 'signed_out'
@@ -329,6 +338,39 @@
     }
   }
 
+  function openBehaviorsEditor() {
+    resetMessages()
+    behaviorsOpen = true
+    behaviorsModal.showModal()
+  }
+
+  // Every behavior edit changes the sheet's columns, so the grade book is reloaded afterwards
+  // rather than guessed at. Returns whether the edit went through, so the row can settle.
+  async function editBehaviors(change: (current: Gradebook, token: string) => Promise<void>): Promise<boolean> {
+    if (!gradebook || saving) return false
+    saving = true
+    resetMessages()
+    const current = gradebook
+    try {
+      const token = await authorize()
+      await change(current, token)
+      gradebook = await loadGradebook(current.id, token)
+      return true
+    } catch (caught) {
+      handleFailure(caught)
+      if (!gradebook) behaviorsModal.close()
+      return false
+    } finally {
+      saving = false
+    }
+  }
+
+  const onAddBehavior = (draft: BehaviorDraft) => editBehaviors((current, token) => addBehavior(current, draft, token))
+  const onRenameBehavior = (index: number, draft: BehaviorDraft) =>
+    editBehaviors((current, token) => renameBehavior(current, index, draft, token))
+  const onRemoveBehavior = (index: number) => editBehaviors((current, token) => removeBehavior(current, index, token))
+  const onRestoreBehavior = (index: number) => editBehaviors((current, token) => restoreBehavior(current, index, token))
+
   function flashSaved(name: string) {
     clearTimeout(justSavedTimer)
     justSaved = name
@@ -337,13 +379,13 @@
 
   function editStudent(student: Student) {
     selectedStudent = student
-    draftGrades = { ...student.grades }
+    draftGrades = [...student.grades]
     resetMessages()
     modal.showModal()
   }
 
-  function toggleDimension(key: DimensionKey) {
-    if (draftGrades) draftGrades = { ...draftGrades, [key]: !draftGrades[key] }
+  function toggleBehavior(index: number) {
+    if (draftGrades) draftGrades = draftGrades.map((grade, other) => (other === index ? !grade : grade))
   }
 
   async function saveGrade() {
@@ -351,11 +393,11 @@
     saving = true
     resetMessages()
     const original = selectedStudent
-    const updated: Student = { ...original, grades: { ...draftGrades } }
+    const updated: Student = { ...original, grades: [...draftGrades] }
 
     try {
       const token = await authorize()
-      updated.row = await updateGrade(gradebook.id, updated, gradebook.dayKey, token)
+      updated.row = await updateGrade(gradebook, updated, token)
       gradebook = {
         ...gradebook,
         students: gradebook.students.map((student) =>
@@ -454,6 +496,9 @@
           title="Refresh"
         >
           <RefreshCw size={20} class={loading ? 'spin' : ''} aria-hidden="true" />
+        </button>
+        <button class="nav-button" onclick={openBehaviorsEditor} disabled={loading} title="Edit behaviors">
+          <ListChecks size={18} aria-hidden="true" /><span>Behaviors</span>
         </button>
         <div class="switcher" bind:this={switcher}>
           <button
@@ -582,16 +627,16 @@
               <span class={'initials color-' + ((index % 5) + 1)}>{student.initials}</span>
               <span class="student-details">
                 <span class="student-name">{student.name}</span>
-                <span class="bubbles" aria-label={totalFor(student.grades) + ' of 5'}>
-                  {#each DIMENSIONS as dimension}
-                    <span class:on={student.grades[dimension.key]} title={dimension.label}>
-                      {dimension.emoji}
+                <span class="bubbles" aria-label={totalFor(student.grades, gradebook.behaviors) + ' of ' + active.length}>
+                  {#each active as index}
+                    <span class:on={student.grades[index]} title={gradebook.behaviors[index].name}>
+                      {gradebook.behaviors[index].emoji || gradebook.behaviors[index].name.charAt(0)}
                     </span>
                   {/each}
                 </span>
               </span>
-              <span class:perfect={totalFor(student.grades) === 5} class="score">
-                {totalFor(student.grades)}<small>/5</small>
+              <span class:perfect={totalFor(student.grades, gradebook.behaviors) === active.length} class="score">
+                {totalFor(student.grades, gradebook.behaviors)}<small>/{active.length}</small>
               </span>
               <span class="chevron" aria-hidden="true">›</span>
             </button>
@@ -611,7 +656,7 @@
         </section>
       {/if}
     </main>
-    {#if error && !selectedStudent && !rosterOpen}
+    {#if error && !selectedStudent && !rosterOpen && !behaviorsOpen}
       <div class="toast" role="alert">
         <span class="toast-icon" aria-hidden="true">!</span>
         <span class="toast-text">{error}</span>
@@ -805,12 +850,46 @@
 </dialog>
 
 <dialog
+  bind:this={behaviorsModal}
+  class="behaviors-modal"
+  onclose={() => (behaviorsOpen = false)}
+  onclick={(event) => event.target === event.currentTarget && !saving && behaviorsModal.close()}
+>
+  {#if gradebook}
+    <div class="modal-body">
+      <form method="dialog">
+        <button class="modal-close" value="cancel" aria-label="Close" disabled={saving}><X size={22} aria-hidden="true" /></button>
+      </form>
+
+      <header class="modal-heading roster-heading">
+        <div>
+          <p class="eyebrow">Grading tiles</p>
+          <h2>Behaviors</h2>
+          <p class="subtext">What you tap for each student. Every behavior is a column of the “Day Records” tab.</p>
+        </div>
+      </header>
+
+      <BehaviorsEditor
+        behaviors={gradebook.behaviors}
+        busy={saving}
+        onadd={onAddBehavior}
+        onrename={onRenameBehavior}
+        onremove={onRemoveBehavior}
+        onrestore={onRestoreBehavior}
+      />
+
+      {#if error}<p class="modal-error" role="alert">{error}</p>{/if}
+    </div>
+  {/if}
+</dialog>
+
+<dialog
   bind:this={modal}
   class="grade-modal"
   onclose={() => (selectedStudent = null)}
   onclick={(event) => event.target === event.currentTarget && modal.close()}
 >
-  {#if selectedStudent && draftGrades}
+  {#if selectedStudent && draftGrades && gradebook}
     <form method="dialog">
       <button class="modal-close" value="cancel" aria-label="Close grade editor"><X size={22} aria-hidden="true" /></button>
 
@@ -821,26 +900,27 @@
           <h2>{selectedStudent.name}</h2>
         </div>
         <div class="modal-score" aria-live="polite">
-          <strong>{totalFor(draftGrades)}</strong><span>/5</span>
+          <strong>{totalFor(draftGrades, gradebook.behaviors)}</strong><span>/{active.length}</span>
         </div>
       </header>
 
       <fieldset class="dimensions">
         <legend>Tap each habit that applied today</legend>
         <div class="dimension-tiles">
-          {#each DIMENSIONS as dimension}
+          {#each active as index}
+            {@const behavior = gradebook.behaviors[index]}
             <button
               type="button"
-              class:checked={draftGrades[dimension.key]}
+              class:checked={draftGrades[index]}
               class="dimension-tile"
-              onclick={() => toggleDimension(dimension.key)}
-              aria-pressed={draftGrades[dimension.key]}
+              onclick={() => toggleBehavior(index)}
+              aria-pressed={draftGrades[index]}
             >
               <span class="tile-check" aria-hidden="true"><Check size={16} strokeWidth={3} /></span>
-              <span class="dimension-emoji">{dimension.emoji}</span>
+              <span class="dimension-emoji">{behavior.emoji || behavior.name.charAt(0)}</span>
               <span class="dimension-copy">
-                <strong>{dimension.label}</strong>
-                <small>{dimension.description}</small>
+                <strong>{behavior.name}</strong>
+                {#if behavior.description}<small>{behavior.description}</small>{/if}
               </span>
             </button>
           {/each}

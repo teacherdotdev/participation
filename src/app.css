@@ -460,7 +460,7 @@ button:disabled, .disabled { cursor: not-allowed; opacity: 0.5; }
   display: block;
 }
 
-.bubbles { display: flex; gap: 5px; }
+.bubbles { display: flex; flex-wrap: wrap; gap: 5px; }
 .bubbles > span {
   width: 30px;
   height: 30px;
@@ -500,7 +500,7 @@ button:disabled, .disabled { cursor: not-allowed; opacity: 0.5; }
 .empty-actions { display: flex; flex-wrap: wrap; justify-content: center; gap: 12px; }
 .empty-actions .button { min-height: 52px; padding: 12px 22px; gap: 6px; }
 
-.grade-modal, .roster-modal {
+.grade-modal, .roster-modal, .behaviors-modal {
   width: min(960px, calc(100% - 24px));
   max-height: calc(100vh - 24px);
   padding: 0;
@@ -512,8 +512,8 @@ button:disabled, .disabled { cursor: not-allowed; opacity: 0.5; }
   overflow: auto;
 }
 
-.grade-modal::backdrop, .roster-modal::backdrop { background: rgba(34, 43, 64, 0.48); }
-.grade-modal form, .roster-modal form { padding: 28px; }
+.grade-modal::backdrop, .roster-modal::backdrop, .behaviors-modal::backdrop { background: rgba(34, 43, 64, 0.48); }
+.grade-modal form, .roster-modal form, .behaviors-modal .modal-body { padding: 28px; }
 
 /* Bulk roster entry: a big paste box, a live count, and the privacy promise right where the names
    are typed. */
@@ -589,7 +589,7 @@ button:disabled, .disabled { cursor: not-allowed; opacity: 0.5; }
 .dimensions legend { margin-bottom: 10px; color: var(--muted); font-size: 0.84rem; font-weight: 750; }
 .dimension-tiles {
   display: grid;
-  grid-template-columns: repeat(5, minmax(0, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
   gap: 10px;
 }
 
@@ -696,8 +696,8 @@ button:disabled, .disabled { cursor: not-allowed; opacity: 0.5; }
 
 @media (max-width: 440px) {
   .brand > span:last-child { display: none; }
-  .grade-modal, .roster-modal { width: calc(100% - 12px); max-height: calc(100vh - 12px); border-radius: 16px; }
-  .grade-modal form, .roster-modal form { padding: 18px; }
+  .grade-modal, .roster-modal, .behaviors-modal { width: calc(100% - 12px); max-height: calc(100vh - 12px); border-radius: 16px; }
+  .grade-modal form, .roster-modal form, .behaviors-modal .modal-body { padding: 18px; }
   .modal-heading { grid-template-columns: auto 1fr; }
   .modal-score { grid-column: 1 / -1; text-align: left; }
 }
@@ -706,6 +706,103 @@ button:disabled, .disabled { cursor: not-allowed; opacity: 0.5; }
   *, *::before, *::after { transition-duration: 0.01ms !important; }
   .nav-button .spin { animation: none; }
   .menu { animation: none; }
+}
+
+/* Behaviors editor: an add form on top, then one row per active behavior with emoji and name
+   editable in place (save per row, since each is a write to the sheet), and the archived ones
+   below with a restore button. Mirrors the behaviors screen in class-notes. */
+.behaviors-modal { width: min(640px, calc(100% - 24px)); }
+.behaviors-modal .modal-body { position: relative; }
+.behaviors-modal .modal-heading .subtext { margin-top: 6px; font-size: 0.88rem; line-height: 1.45; }
+.sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0; }
+.behavior-add {
+  margin: 22px 0 14px;
+  padding: 16px;
+  border: 1px solid var(--line);
+  border-radius: 16px;
+  background: #f8f9fc;
+  display: grid;
+  grid-template-columns: 90px minmax(0, 1fr) auto;
+  align-items: end;
+  gap: 12px;
+}
+.behavior-add label { display: flex; flex-direction: column; gap: 6px; min-width: 0; }
+.behavior-add label > span { color: var(--muted); font-size: 0.74rem; font-weight: 850; letter-spacing: 0.07em; text-transform: uppercase; }
+.behavior-add small { letter-spacing: 0; text-transform: none; font-weight: 600; }
+.behavior-add .button { min-height: 48px; gap: 6px; }
+.behavior-add input, .behavior-row input {
+  width: 100%;
+  min-height: 48px;
+  padding: 0 12px;
+  border: 2px solid var(--line);
+  border-radius: 11px;
+  color: var(--ink);
+  background: #fff;
+  font: inherit;
+  font-size: 0.95rem;
+}
+.behavior-add input:focus, .behavior-row input:focus { border-color: var(--blue); outline: 3px solid rgba(91, 111, 232, 0.28); outline-offset: 2px; }
+.emoji-input { text-align: center; font-size: 1.15rem !important; }
+.behavior-list { display: grid; gap: 8px; }
+.behavior-row {
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  background: #fff;
+  display: grid;
+  grid-template-columns: 64px minmax(0, 1fr) 48px auto;
+  align-items: center;
+  gap: 9px;
+}
+.behavior-row.confirming { border-color: #f0cbd0; }
+.behavior-row label { min-width: 0; }
+.icon-action {
+  min-width: 48px;
+  min-height: 48px;
+  padding: 0 10px;
+  border: 0;
+  border-radius: 10px;
+  color: var(--muted);
+  background: #f3f5f8;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+  font-size: 0.86rem;
+  font-weight: 700;
+}
+.icon-action:not(:disabled):hover { color: var(--ink); background: #e6e9f0; }
+.save-action:not(:disabled) { color: #fff; background: var(--blue); }
+.save-action:not(:disabled):hover { color: #fff; background: var(--blue-dark); }
+.delete-action:not(:disabled):hover, .delete-action.confirming { color: var(--danger); background: var(--danger-soft); }
+.restore-action:not(:disabled) { color: #30775b; background: var(--green-soft); }
+.row-error, .row-hint { grid-column: 2 / -1; margin: -2px 0 2px; font-size: 0.8rem; line-height: 1.4; }
+.row-error { color: var(--danger); }
+.row-hint { color: var(--muted); }
+.archived-behaviors { margin-top: 24px; padding-top: 18px; border-top: 1px solid var(--line); }
+.archived-behaviors h3 { margin: 0 0 4px; font-size: 0.95rem; font-weight: 800; }
+.archived-behaviors .subtext { font-size: 0.86rem; line-height: 1.45; }
+.archived-list { margin: 12px 0 0; padding: 0; list-style: none; display: grid; gap: 8px; }
+.archived-list li {
+  padding: 8px 8px 8px 14px;
+  border: 1px dashed #d3d9e6;
+  border-radius: 14px;
+  color: var(--muted);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+.archived-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 650; }
+
+@media (max-width: 440px) {
+  .behavior-add { grid-template-columns: 78px minmax(0, 1fr); }
+  .behavior-add .button { grid-column: 1 / -1; }
+  .behavior-row { padding: 8px; gap: 6px; grid-template-columns: 48px minmax(0, 1fr) 42px 42px; }
+  .behavior-row input { padding: 0 8px; }
+  .behavior-row .icon-action { min-width: 42px; padding: 0; }
+  .delete-action span, .restore-action span { display: none; }
 }
 
 /* Onboarding ladder. A row is [mark] [title + hint] [action]; rows below the current one are

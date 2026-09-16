@@ -20,12 +20,14 @@ var TAB_WEEKLY = 'Weekly Grades';
 var TAB_ROSTER = 'Class Roster';
 var TAB_WEEKS = 'Week Ranges';
 
+// The default behaviors. Each is a "Day Records" column headed "emoji name"; teachers add, rename,
+// and archive behaviors from the app, which edits these columns in place.
 var DIMENSIONS = [
-  'Timely-ness',
-  'Prepared-ness',
-  'Attentive-ness',
-  'Contribution-ness',
-  'Collaboration-ness'
+  '⏰ On time',
+  '✏️ Prepared',
+  '👀 Focused',
+  '💬 Participated',
+  '🤝 Teamwork'
 ];
 
 var COLORS = {
@@ -107,13 +109,14 @@ function buildDayRecords_(sheet) {
   prepareSheet_(sheet, headers, COLORS.blue);
 
   sheet.getRange('A1').setNote(
-    'The app creates one row per student per day. Do not rename this tab or its headers.'
+    'The app creates one row per student per day. Do not rename this tab, or the Name, Date, and Total headers. ' +
+    'Columns between Date and Total are the participation behaviors; edit them from the app.'
   );
   sheet.getRange('B1').setNote(
     'Dates are written using the spreadsheet timezone: ' + TEMPLATE_TIME_ZONE
   );
   sheet.getRange('H1').setNote(
-    'Calculated automatically from the five participation columns.'
+    'Calculated automatically from the participation columns.'
   );
 
   sheet.getRange('H2').setFormula(

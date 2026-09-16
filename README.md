@@ -78,11 +78,13 @@ Create a Google Sheet and set its timezone under **File → Settings**. Make it 
 
 ### Day Records
 
-Put these exact headers in `A1:H1`:
+Put these headers in `A1:H1`. `Name`, `Date`, and `Total` are fixed; every column between `Date` and `Total` is a participation behavior, headed by an emoji, a space, and its name:
 
 ```text
-Name | Date | Timely-ness | Prepared-ness | Attentive-ness | Contribution-ness | Collaboration-ness | Total
+Name | Date | ⏰ On time | ✏️ Prepared | 👀 Focused | 💬 Participated | 🤝 Teamwork | Total
 ```
+
+(Copies made from the earlier template, with `Timely-ness` … `Collaboration-ness` headers, still open fine; the app maps those to the same five defaults.)
 
 Format column B as `yyyy-mm-dd`. Put this formula in `H2`:
 
@@ -128,7 +130,17 @@ Put this formula in `C2`:
 =MAP(FILTER(A2:A,A2:A<>""),FILTER(B2:B,A2:A<>""),LAMBDA(name,week,IFERROR(AVERAGEIFS('Day Records'!H:H,'Day Records'!A:A,name,'Day Records'!B:B,">="&XLOOKUP(week,'Week Ranges'!A:A,'Week Ranges'!B:B),'Day Records'!B:B,"<="&XLOOKUP(week,'Week Ranges'!A:A,'Week Ranges'!C:C)),"")))
 ```
 
-Do not include an example row in Day Records. On the first load each day, the app creates a default 5/5 row for every rostered student.
+Do not include an example row in Day Records. On the first load each day, the app creates a row for every rostered student with Yes in every active behavior.
+
+## Behaviors
+
+The five behaviors above are only the defaults. **Behaviors** in the grade book's top bar opens an editor, modelled on the one in class-notes, where a teacher can add a behavior, rename one or change its emoji, remove one, or restore one that was removed. Everything edits the "Day Records" tab directly, so the sheet stays the single source of truth across devices:
+
+- **Add** inserts a column just before `Total`, formatted like the first behavior column, rewrites the `Total` formula to include it, and marks today's existing rows Yes.
+- **Rename** rewrites the header cell as `emoji name`.
+- **Remove** hides the column when it has grades on an earlier day (so past days and their totals stay intact; the app skips the hidden column on new days) and deletes it outright when it has only ever been graded today. Hidden columns appear under *Archived* in the editor, where **Restore** unhides them. At least one active behavior must remain.
+
+The `Weekly Grades` formula references `Total` by column, and Google shifts that reference when columns are inserted or deleted, so it keeps working.
 
 ## Commands
 
