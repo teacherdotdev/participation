@@ -4,6 +4,7 @@
 
 import { DEFAULT_BEHAVIORS, type Behavior, type BehaviorDraft, type Gradebook, type PickedSpreadsheet, type Student } from './types'
 import { defaultGrades } from './sheets'
+import type { PendingGrade } from './local-copy'
 
 export const FAKE_GOOGLE = import.meta.env.VITE_FAKE_GOOGLE === 'true'
 
@@ -91,12 +92,16 @@ export async function fakeRenameSpreadsheet(spreadsheetId: string, title: string
   return title
 }
 
-export async function fakeUpdateGrade(student: Student): Promise<number> {
+export async function fakeSaveGrades(entries: readonly PendingGrade[]): Promise<void> {
   await new Promise((resolve) => setTimeout(resolve, 250))
-  const index = students?.findIndex((entry) => entry.name === student.name) ?? -1
-  if (index < 0 || !students) throw new Error('No such student in the fake sheet.')
-  students[index] = { ...student, row: index + 2 }
-  return index + 2
+  const today = todayLabel().key
+  for (const entry of entries) {
+    const student = entry.dayKey === today ? students?.find((other) => other.name === entry.name) : undefined
+    if (!student) continue
+    student.grades = behaviors.map((behavior, index) =>
+      !behavior.archived && Object.hasOwn(entry.grades, behavior.name) ? entry.grades[behavior.name] : student.grades[index],
+    )
+  }
 }
 
 export async function fakeRenameBehavior(index: number, draft: BehaviorDraft): Promise<void> {

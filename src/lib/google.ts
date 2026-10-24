@@ -220,6 +220,11 @@ export function authorize(): Promise<string> {
   return currentToken().then((current) => current.accessToken)
 }
 
+/** Whether authorize() would resolve without a popup, so it is safe to call outside a click. */
+export function hasFreshToken(): boolean {
+  return isFresh(token)
+}
+
 export function clearAuthorization(): void {
   token = null
 }
