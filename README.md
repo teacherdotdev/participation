@@ -155,7 +155,9 @@ npm run build
 
 The Google access token is kept in memory only and is discarded on expiry, sign-out, and tab close. No refresh token exists. Local storage holds the connected account's email, spreadsheet IDs and names, onboarding progress, and a copy of each grade book opened on this device (its roster, behaviors and today's grades) along with any grades not yet saved to the sheet. Student data travels only between the browser and Google.
 
-Grades are saved on the device first. While the Google token is fresh, each grade is written to the sheet straight away; once it has expired, grades queue up, the cards show a dot, and **Save to sheet** in the top bar shows how many are waiting. Pressing it opens Google's popup if needed and writes them all. Because the roster is kept on the device, a returning teacher lands on it without signing in again. Roster, behavior and rename edits still go straight to Google, and write any queued grades first.
+Grades are saved on the device and reach the sheet only when the teacher presses **Save to sheet** in the top bar. Until then the cards of unsaved students show a dot and the button shows how many grades are waiting; pressing it opens Google's popup if needed and writes them all. Because the roster is kept on the device, a returning teacher lands on it without signing in again. Roster, behavior and rename edits still go straight to Google; queued grades are keyed by behavior name and follow a rename, so they still land in the right column.
+
+The first time a teacher reaches the roster, two tips (in the style of Happy Hallways) point at a student card and at **Save to sheet**. Which tips a device has shown is kept in local storage and cleared on sign-out.
 
 **Sign out** forgets the token and everything this device remembers, including the local copies (it asks for a second press if grades are still unsaved), but leaves the Drive grant with Google, so coming back is one Google click. Teachers revoke the grant from their Google Account's third-party access page. **Switch grade book** only forgets the saved spreadsheet.
 

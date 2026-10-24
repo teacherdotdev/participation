@@ -957,3 +957,34 @@ button:disabled, .disabled { cursor: not-allowed; opacity: 0.5; }
 @media (prefers-reduced-motion: reduce) {
   .toast, .student-card.just-saved .score { animation: none; }
 }
+
+/* First-visit tips: an outline around one thing on the page and a card beside it. Above the toast,
+   below dialogs (which the tips wait out). */
+.tip-spotlight {
+  position: fixed;
+  z-index: 30;
+  border: 3px solid var(--blue);
+  border-radius: 16px;
+  box-shadow: 0 0 0 4px rgba(91, 111, 232, 0.22);
+  pointer-events: none;
+}
+.tip {
+  position: fixed;
+  z-index: 31;
+  display: grid;
+  gap: 6px;
+  width: 300px;
+  padding: 16px 18px;
+  border: 1px solid var(--line);
+  border-radius: 16px;
+  background: var(--paper);
+  box-shadow: 0 16px 40px rgba(34, 43, 64, 0.2);
+  animation: toast-in-place 0.2s ease-out;
+}
+.tip .eyebrow { margin: 0; }
+.tip h3 { margin: 0; color: var(--ink); font-size: 1.05rem; }
+.tip-text { margin: 0; color: var(--muted); font-size: 0.9rem; line-height: 1.5; }
+.tip-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 6px; }
+.tip-actions .button { min-height: 40px; padding: 0 16px; font-size: 0.88rem; }
+@keyframes toast-in-place { from { opacity: 0; transform: translateY(6px); } }
+@media (prefers-reduced-motion: reduce) { .tip { animation: none; } }
