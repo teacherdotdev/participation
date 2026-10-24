@@ -67,6 +67,16 @@ export function rememberAccount(email: string): void {
   write(ACCOUNT_KEY, email)
 }
 
+/** Drops a spreadsheet this app can no longer open, so it is picked again rather than retried. */
+export function forgetSpreadsheet(id: string): void {
+  if (read(SHEET_ID_KEY) === id) {
+    write(SHEET_ID_KEY, null)
+    write(SHEET_NAME_KEY, null)
+  }
+  const others = getRecentSpreadsheets().filter((entry) => entry.id !== id)
+  write(RECENT_SHEETS_KEY, JSON.stringify(others))
+}
+
 export function hasCopiedTemplate(): boolean {
   return read(TEMPLATE_COPIED_KEY) === 'true'
 }

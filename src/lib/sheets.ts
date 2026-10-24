@@ -474,6 +474,12 @@ export async function restoreBehavior(gradebook: Gradebook, index: number, token
   await batchUpdate(gradebook.id, token, [hideColumnRequest(gradebook.sheetId, index + FIRST_BEHAVIOR_COLUMN, false)])
 }
 
+/** `drive.file` only reaches files picked through this OAuth client; Google reports any other
+ *  file (including one picked under an earlier client, or trashed) as 404. */
+export function isUnreachableSheetError(error: unknown): boolean {
+  return error instanceof GoogleApiError && error.status === 404
+}
+
 export function isAuthorizationError(error: unknown): boolean {
   return error instanceof GoogleApiError && error.status === 401
 }
