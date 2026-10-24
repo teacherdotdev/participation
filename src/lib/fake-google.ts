@@ -1,6 +1,6 @@
-// In-memory stand-ins for Google Picker and the Sheets API, used only when VITE_FAKE_GOOGLE=true
-// (local click-through with scripts/mock-broker.mjs). Vite replaces the env check at build time, so
-// none of this ships when the flag is unset.
+// In-memory stand-ins for the Google sign-in popup, Google Picker and the Sheets API, used only when
+// VITE_FAKE_GOOGLE=true (local click-through). Vite replaces the env check at build time, so none of
+// this ships when the flag is unset.
 
 import { DEFAULT_BEHAVIORS, type Behavior, type BehaviorDraft, type Gradebook, type PickedSpreadsheet, type Student } from './types'
 import { defaultGrades } from './sheets'
@@ -25,6 +25,15 @@ let behaviors: Behavior[] = DEFAULT_BEHAVIORS.map(({ name, emoji, description })
   archived: false,
   hasHistory: true,
 }))
+
+const FAKE_EMAIL = 'teacher@example.com'
+
+/** Stands in for the Google popup. Resolves `null` when the teacher "presses Cancel". */
+export function fakeAuthorize(): Promise<{ accessToken: string; expiresAt: number; email: string } | null> {
+  const ok = window.confirm(`[Fake Google sign-in]\n\nAllow access to files you pick as ${FAKE_EMAIL}?\n\nCancel simulates closing the Google window.`)
+  // A short life so the re-authorization popup comes up during a click-through.
+  return Promise.resolve(ok ? { accessToken: 'fake-token', expiresAt: Date.now() + 5 * 60_000, email: FAKE_EMAIL } : null)
+}
 
 export function fakePickSpreadsheet(): Promise<PickedSpreadsheet | null> {
   const ok = window.confirm(`[Fake Google Picker]\n\nPick “${SHEET.name}”?\n\nCancel simulates closing the picker.`)

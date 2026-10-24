@@ -864,8 +864,6 @@ button:disabled, .disabled { cursor: not-allowed; opacity: 0.5; }
   .step-action { grid-column: 2; justify-self: start; min-width: 0; }
 }
 
-.opening-view { display: flex; align-items: center; justify-content: center; min-height: 40vh; }
-.opening-note { color: var(--muted); font-size: 1rem; font-weight: 600; }
 
 /* Save confirmation happens on the card itself rather than in a banner. */
 .student-card.just-saved { border-color: var(--green); }

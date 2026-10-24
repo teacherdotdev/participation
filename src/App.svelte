@@ -16,24 +16,18 @@
   import X from '@lucide/svelte/icons/x'
   import BehaviorsEditor from './BehaviorsEditor.svelte'
   import {
-    BrokerError,
-    connectDrive,
-    consumeArrivalError,
-    describeArrivalError,
-    getConnection,
-    signIn,
-    signOut,
-    type DriveConnection,
-  } from './lib/broker'
-  import {
     authorize,
     clearAuthorization,
+    GoogleAuthError,
+    missingGoogleConfig,
     missingTemplateConfig,
     pickSpreadsheet,
+    prepareAuthorization,
     templateCopyUrl,
   } from './lib/google'
   import {
     getRecentSpreadsheets,
+    getRememberedAccount,
     getRememberedSpreadsheet,
     hasCopiedTemplate,
     markTemplateCopied,
@@ -55,12 +49,10 @@
   } from './lib/sheets'
   import { activeBehaviors, totalFor, type BehaviorDraft, type Gradebook, type Grades, type Student } from './lib/types'
 
-  type Session = 'checking' | 'signed_out' | 'not_connected' | 'invalid' | 'ready'
-
-  let session: Session = 'checking'
-  let connection: DriveConnection | null = null
+  // Email of the Google account connected on this device. There is no server session: a token is
+  // fetched from Google (by popup) on the first click that needs one, and again about hourly.
+  let account = ''
   let gradebook: Gradebook | null = null
-  let autoOpening = false // a returning teacher goes straight to the roster, no step list
   let pendingGradebook: Gradebook | null = null // loaded at pick time on the first run, shown by step 5
   let spreadsheet: RememberedSpreadsheet | null = null
   let recent: RememberedSpreadsheet[] = [] // grade books opened on this device, for the switcher menu
@@ -93,11 +85,8 @@
   onMount(() => {
     spreadsheet = getRememberedSpreadsheet()
     templateCopied = hasCopiedTemplate()
-    autoOpening = !!spreadsheet
-    const arrival = consumeArrivalError()
-    if (arrival === 'access_denied') notice = describeArrivalError(arrival)
-    else if (arrival) error = describeArrivalError(arrival)
-    void refreshSession()
+    account = getRememberedAccount()
+    prepareAuthorization()
     syncFullscreen()
     document.addEventListener('webkitfullscreenchange', syncFullscreen)
     return () => document.removeEventListener('webkitfullscreenchange', syncFullscreen)
@@ -124,9 +113,8 @@
   $: possiblePoints = (gradebook?.students.length ?? 0) * active.length
   $: rosterNames = parseRosterNames(rosterText, gradebook?.students.map((student) => student.name) ?? [])
   // Onboarding is a strict ladder: a step is only actionable once every step above it is done.
-  $: signedIn = session !== 'checking' && session !== 'signed_out'
-  $: driveReady = session === 'ready'
-  $: stepsDone = [signedIn, driveReady, templateCopied || !!spreadsheet, !!spreadsheet, false]
+  $: connected = !!account
+  $: stepsDone = [connected, templateCopied || !!spreadsheet, !!spreadsheet, false]
   $: currentStep = stepsDone.indexOf(false) + 1
   $: stepState = (step: number) =>
     stepsDone[step - 1] ? 'done' : step === currentStep ? 'current' : 'locked'
@@ -140,92 +128,60 @@
     error = caught instanceof Error ? caught.message : 'Something went wrong. Please try again.'
   }
 
-  function sessionFromConnection(current: DriveConnection | null): Session {
-    if (!current) return 'signed_out'
-    if (!current.connected) return 'not_connected'
-    return current.status === 'invalid' ? 'invalid' : 'ready'
+  // Wraps authorize() so the header and copy link follow whichever account Google handed back.
+  // Like authorize(), call it before any await in a click handler, or the popup is blocked.
+  async function getToken(): Promise<string> {
+    const current = await authorize()
+    account = getRememberedAccount()
+    return current
   }
 
-  async function refreshSession() {
-    try {
-      connection = await getConnection()
-      session = sessionFromConnection(connection)
-    } catch (caught) {
-      session = 'signed_out'
-      showError(caught)
-    }
-    // Every step already done: skip the list entirely and open the roster.
-    if (session === 'ready' && spreadsheet) await openGradebook(spreadsheet.id)
-    autoOpening = false
-  }
-
-  // Broker failures change what the setup screen should offer; Google 401s mean the token is dead.
+  // A closed popup is the teacher's choice, not an error; Google 401s mean the token is dead.
   function handleFailure(caught: unknown) {
-    if (caught instanceof BrokerError) {
-      if (caught.signedOut) session = 'signed_out'
-      else if (caught.status === 404) session = 'not_connected'
-      else if (caught.status === 409) session = 'invalid'
-      if (caught.signedOut || caught.needsConnection) {
-        clearAuthorization()
-        gradebook = null
-        pendingGradebook = null
-      }
-    } else if (isAuthorizationError(caught)) {
-      clearAuthorization()
+    if (caught instanceof GoogleAuthError && caught.cancelled) {
+      notice = caught.message
+      return
     }
+    if (isAuthorizationError(caught)) clearAuthorization()
     showError(caught)
   }
 
-  async function startSignIn() {
+  async function connectGoogle() {
     resetMessages()
     loading = true
     try {
-      await signIn()
+      await getToken()
     } catch (caught) {
-      showError(caught)
-      loading = false
-    }
-  }
-
-  async function startConnectDrive() {
-    resetMessages()
-    loading = true
-    try {
-      await connectDrive()
-    } catch (caught) {
-      showError(caught)
-      loading = false
-    }
-  }
-
-  async function endSession() {
-    resetMessages()
-    loading = true
-    try {
-      await signOut()
-    } catch (caught) {
-      showError(caught)
+      handleFailure(caught)
+      return
     } finally {
-      clearAuthorization()
-      forgetEverything()
-      gradebook = null
-      pendingGradebook = null
-      selectedStudent = null
-      spreadsheet = null
-      recent = []
-      templateCopied = false
-      autoOpening = false
-      connection = null
-      session = 'signed_out'
       loading = false
     }
+    // The token is in hand, so this needs no popup: a teacher whose grade book is already
+    // remembered on this device goes straight to it.
+    if (spreadsheet) await openGradebook(spreadsheet.id)
+  }
+
+  // Forgets the token and this device's setup. The Drive grant stays with Google, so coming back
+  // is one click; revoking it is done from the Google Account page.
+  function endSession() {
+    resetMessages()
+    clearAuthorization()
+    forgetEverything()
+    gradebook = null
+    pendingGradebook = null
+    selectedStudent = null
+    spreadsheet = null
+    recent = []
+    templateCopied = false
+    account = ''
   }
 
   async function openGradebook(id: string) {
     resetMessages()
     loading = true
     try {
-      const token = await authorize()
+      const token = await getToken()
       gradebook = await loadGradebook(id, token)
       // The title is the Drive file name, so a rename in Google Sheets shows up here on the next
       // load; keep the switcher's recent list in step with it.
@@ -253,7 +209,7 @@
       if (!picked) return
       // Check the tabs now so a wrong file is caught on this step. The roster waits behind step 5
       // on this first run; every later visit skips the list and opens it directly.
-      const token = await authorize()
+      const token = await getToken()
       pendingGradebook = await loadGradebook(picked.id, token)
       spreadsheet = { id: picked.id, name: pendingGradebook.title || picked.name }
       rememberSpreadsheet(spreadsheet)
@@ -273,7 +229,7 @@
       pendingGradebook = null
       return
     }
-    // No preloaded roster means an automatic open failed earlier; this is the retry.
+    // A returning visit, or a retry: the roster loads now, inside this click, so Google's popup can open.
     return openGradebook(spreadsheet.id)
   }
 
@@ -296,7 +252,7 @@
     saving = true
     resetMessages()
     try {
-      const token = await authorize()
+      const token = await getToken()
       const title = await renameSpreadsheet(gradebook.id, next, token)
       gradebook = { ...gradebook, title }
       spreadsheet = { id: gradebook.id, name: title }
@@ -326,7 +282,7 @@
     resetMessages()
     const id = gradebook.id
     try {
-      const token = await authorize()
+      const token = await getToken()
       await addStudents(id, rosterNames, token)
       gradebook = await loadGradebook(id, token)
       rosterModal.close()
@@ -352,7 +308,7 @@
     resetMessages()
     const current = gradebook
     try {
-      const token = await authorize()
+      const token = await getToken()
       await change(current, token)
       gradebook = await loadGradebook(current.id, token)
       return true
@@ -396,7 +352,7 @@
     const updated: Student = { ...original, grades: [...draftGrades] }
 
     try {
-      const token = await authorize()
+      const token = await getToken()
       updated.row = await updateGrade(gradebook, updated, token)
       gradebook = {
         ...gradebook,
@@ -435,7 +391,7 @@
     resetMessages()
     loading = true
     try {
-      const token = await authorize()
+      const token = await getToken()
       const next = await loadGradebook(id, token)
       spreadsheet = { id, name: next.title || name }
       rememberSpreadsheet(spreadsheet)
@@ -537,7 +493,7 @@
                 class="menu-item"
                 class:disabled={missingTemplateConfig}
                 role="menuitem"
-                href={templateCopyUrl(connection?.googleEmail)}
+                href={templateCopyUrl(account)}
                 target="_blank"
                 rel="noreferrer"
                 aria-disabled={missingTemplateConfig}
@@ -571,9 +527,9 @@
           <LogOut size={18} aria-hidden="true" /><span>Sign out</span>
         </button>
       </nav>
-    {:else if connection?.googleEmail}
+    {:else if account}
       <nav class="topbar-actions" aria-label="Account">
-        <span class="privacy-note">{connection.googleEmail}</span>
+        <span class="privacy-note">{account}</span>
         <button class="text-button" onclick={endSession} disabled={loading}>Sign out</button>
       </nav>
     {:else}
@@ -663,14 +619,10 @@
         <button class="toast-dismiss" onclick={() => (error = '')} aria-label="Dismiss">×</button>
       </div>
     {/if}
-  {:else if autoOpening}
-    <main class="setup-view opening-view" aria-busy="true">
-      <p class="opening-note">Opening your grade book…</p>
-    </main>
   {:else}
     <main class="setup-view">
       <section class="setup-intro">
-        <h1>Set up your grade book</h1>
+        <h1>{currentStep === 4 && !pendingGradebook ? 'Welcome back' : 'Set up your grade book'}</h1>
       </section>
 
       {#if error}
@@ -679,6 +631,11 @@
       {#if notice}
         <div class="banner success-banner setup-banner" role="status"><span>✓</span>{notice}</div>
       {/if}
+      {#if missingGoogleConfig}
+        <div class="banner error-banner setup-banner" role="alert">
+          <span>!</span>Google sign-in is not configured yet. Follow the README before connecting.
+        </div>
+      {/if}
       {#if missingTemplateConfig}
         <div class="banner error-banner setup-banner" role="alert">
           <span>!</span>The template spreadsheet is not configured yet. Follow the README before connecting.
@@ -686,59 +643,35 @@
       {/if}
 
       <ol class="steps" aria-label="Setup steps">
-        <!-- 1. Sign in -->
+        <!-- 1. Connect Google -->
         <li class={'step ' + stepState(1)} aria-current={stepState(1) === 'current' ? 'step' : undefined}>
-          <span class="step-mark" aria-hidden="true">{signedIn ? '✓' : '1'}</span>
+          <span class="step-mark" aria-hidden="true">{connected ? '✓' : '1'}</span>
           <div class="step-text">
-            <strong>{signedIn ? 'Signed in with Google' : 'Sign in with Google'}</strong>
+            <strong>{connected ? 'Google connected' : 'Connect Google'}</strong>
             <span>
-              {#if signedIn && connection?.googleEmail}
-                {connection.googleEmail}
-              {:else if session === 'checking'}
-                Checking whether you are already signed in…
-              {:else}
-                So we know which Google account to work with.
-              {/if}
-            </span>
-          </div>
-          <button class="button primary step-action" onclick={startSignIn} disabled={loading || stepState(1) !== 'current'}>
-            {signedIn ? 'Signed in' : loading && currentStep === 1 ? 'Opening Google…' : 'Sign in with Google'}
-          </button>
-        </li>
-
-        <!-- 2. Connect Drive -->
-        <li class={'step ' + stepState(2)} aria-current={stepState(2) === 'current' ? 'step' : undefined}>
-          <span class="step-mark" aria-hidden="true">{driveReady ? '✓' : '2'}</span>
-          <div class="step-text">
-            <strong>{driveReady ? 'Google Drive connected' : session === 'invalid' ? 'Reconnect Google Drive' : 'Connect Google Drive'}</strong>
-            <span>
-              {#if driveReady}
-                Access is limited to the files you pick.
-              {:else if session === 'invalid' && connection?.lastError === 'admin_policy_enforced'}
-                Your Google Workspace administrator has blocked this app. Ask them to allow it, then reconnect.
-              {:else if session === 'invalid'}
-                Google stopped accepting our access to your Drive. Reconnecting takes one click.
+              {#if connected}
+                {account}
               {:else}
                 Google asks permission for files you pick — nothing else in your Drive.
               {/if}
             </span>
           </div>
-          <button class="button primary step-action" onclick={startConnectDrive} disabled={loading || stepState(2) !== 'current'}>
-            {driveReady ? 'Connected' : loading && currentStep === 2 ? 'Opening Google…' : session === 'invalid' ? 'Reconnect Drive' : 'Connect Drive'}
+          <button class="button primary step-action" onclick={connectGoogle} disabled={loading || missingGoogleConfig || stepState(1) !== 'current'}>
+            {connected ? 'Connected' : loading && currentStep === 1 ? 'Opening Google…' : 'Connect Google'}
           </button>
         </li>
 
-        <!-- 3. Make a copy -->
-        <li class={'step ' + stepState(3)} aria-current={stepState(3) === 'current' ? 'step' : undefined}>
-          <span class="step-mark" aria-hidden="true">{stepsDone[2] ? '✓' : '3'}</span>
+        <!-- 2. Make a copy -->
+        <li class={'step ' + stepState(2)} aria-current={stepState(2) === 'current' ? 'step' : undefined}>
+          <span class="step-mark" aria-hidden="true">{stepsDone[1] ? '✓' : '2'}</span>
           <div class="step-text">
-            <strong>{stepsDone[2] ? 'Template copied' : 'Make your copy of the template'}</strong>
+            <strong>{stepsDone[1] ? 'Template copied' : 'Make your copy of the template'}</strong>
             <span>
-              {#if stepsDone[2]}
+              {#if stepsDone[1]}
                 Your copy is in your Google Drive.
               {:else}
                 Press <em>Make a copy</em> in the tab that opens, then come back.
-                {#if stepState(3) === 'current'}
+                {#if stepState(2) === 'current'}
                   <button type="button" class="link-button" onclick={copyTemplate}>I already have a copy</button>
                 {/if}
               {/if}
@@ -746,22 +679,22 @@
           </div>
           <a
             class="button primary step-action"
-            class:disabled={stepState(3) !== 'current' || missingTemplateConfig}
-            href={templateCopyUrl(connection?.googleEmail)}
+            class:disabled={stepState(2) !== 'current' || missingTemplateConfig}
+            href={templateCopyUrl(account)}
             target="_blank"
             rel="noreferrer"
-            aria-disabled={stepState(3) !== 'current' || missingTemplateConfig}
-            tabindex={stepState(3) === 'current' && !missingTemplateConfig ? 0 : -1}
+            aria-disabled={stepState(2) !== 'current' || missingTemplateConfig}
+            tabindex={stepState(2) === 'current' && !missingTemplateConfig ? 0 : -1}
             onclick={(event) => {
-              if (stepState(3) !== 'current' || missingTemplateConfig) return event.preventDefault()
+              if (stepState(2) !== 'current' || missingTemplateConfig) return event.preventDefault()
               copyTemplate()
             }}
-          >{stepsDone[2] ? 'Copied' : 'Make a copy ↗'}</a>
+          >{stepsDone[1] ? 'Copied' : 'Make a copy ↗'}</a>
         </li>
 
-        <!-- 4. Pick the copy -->
-        <li class={'step ' + stepState(4)} aria-current={stepState(4) === 'current' ? 'step' : undefined}>
-          <span class="step-mark" aria-hidden="true">{spreadsheet ? '✓' : '4'}</span>
+        <!-- 3. Pick the copy -->
+        <li class={'step ' + stepState(3)} aria-current={stepState(3) === 'current' ? 'step' : undefined}>
+          <span class="step-mark" aria-hidden="true">{spreadsheet ? '✓' : '3'}</span>
           <div class="step-text">
             <strong>{spreadsheet ? 'Spreadsheet chosen' : 'Pick your copy'}</strong>
             <span>
@@ -773,20 +706,20 @@
               {/if}
             </span>
           </div>
-          <button class="button primary step-action" onclick={chooseSpreadsheet} disabled={loading || stepState(4) !== 'current'}>
-            {spreadsheet ? 'Chosen' : loading && currentStep === 4 ? 'Opening Google…' : 'Choose spreadsheet'}
+          <button class="button primary step-action" onclick={chooseSpreadsheet} disabled={loading || stepState(3) !== 'current'}>
+            {spreadsheet ? 'Chosen' : loading && currentStep === 3 ? 'Opening Google…' : 'Choose spreadsheet'}
           </button>
         </li>
 
-        <!-- 5. Start grading -->
-        <li class={'step ' + stepState(5)} aria-current={stepState(5) === 'current' ? 'step' : undefined}>
-          <span class="step-mark" aria-hidden="true">5</span>
+        <!-- 4. Start grading -->
+        <li class={'step ' + stepState(4)} aria-current={stepState(4) === 'current' ? 'step' : undefined}>
+          <span class="step-mark" aria-hidden="true">4</span>
           <div class="step-text">
             <strong>Start grading</strong>
             <span>Today’s roster, one tap per student, saved straight to your sheet.</span>
           </div>
-          <button class="button primary step-action" onclick={startGrading} disabled={loading || stepState(5) !== 'current'}>
-            {loading && currentStep === 5 ? 'Opening…' : 'Start grading'}
+          <button class="button primary step-action" onclick={startGrading} disabled={loading || stepState(4) !== 'current'}>
+            {loading && currentStep === 4 ? 'Opening…' : 'Start grading'}
           </button>
         </li>
       </ol>

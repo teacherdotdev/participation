@@ -2,7 +2,7 @@
 
 A client-side Svelte participation grade book. Teachers make their own copy of one Google Sheets template, choose it with Google Picker, and grade directly from the browser. Student data travels only between the browser and Google.
 
-Sign-in and Google Drive authorization go through the auth broker at `https://auth.teacher.dev`. The broker holds the long-lived Google refresh token server-side and hands the browser short-lived access tokens on demand; the browser never runs an OAuth flow itself and never sees a client secret.
+Google authorization runs entirely in the browser with the Google Identity Services token client. A Google popup returns a short-lived access token; there is no server, no refresh token, and no client secret.
 
 ## Local setup
 
@@ -14,49 +14,50 @@ npm install
 npm run dev
 ```
 
-The dev server is pinned to port 5173 (`strictPort`) because the broker's origin allowlist holds exactly `http://localhost:5173`. If the port is taken, free it rather than moving the app; a different port has to be added to the broker's `AUTH_BROKER_DEV_APP_ORIGIN`.
+The dev server is pinned to port 5173 (`strictPort`) because the OAuth client lists exactly `http://localhost:5173` as an Authorized JavaScript origin. If the port is taken, free it rather than moving the app; a different port has to be added to the OAuth client first.
 
 Fill in `.env.local`:
 
-- `VITE_AUTH_BROKER_URL`: base URL of the auth broker. Defaults to `https://auth.teacher.dev` when unset.
+- `VITE_GOOGLE_CLIENT_ID`: the Web application OAuth client ID (`….apps.googleusercontent.com`).
+- `VITE_GOOGLE_API_KEY`: the browser API key Google Picker uses.
+- `VITE_GOOGLE_APP_ID`: the Cloud project number of the project that owns the OAuth client. Picker uses it to grant `drive.file` access to the picked file.
 - `VITE_GOOGLE_TEMPLATE_ID`: ID between `/d/` and `/edit` in the template URL. The repository is currently configured for `1cS83Iyp41lX6Hli14NfibPIjETNTwglhU_0uGRNOIYo`.
 - `VITE_CF_BEACON` (optional): Cloudflare Web Analytics token. Set it in Vercel's production environment only; when unset the beacon script is not loaded.
 
-The Google OAuth client ID, Picker API key, and Cloud project number live on the broker. `appId` and `apiKey` arrive with every minted token, so the client never hardcodes which Google Cloud project backs it.
+All three Google values ship in the client bundle; none of them is a secret. Set them in Vercel for every environment that should sign in.
 
 ## Local click-through without Google
 
-`scripts/mock-broker.mjs` stands in for `auth.teacher.dev`, with a pretend Google consent page and a control panel for breaking things. Pair it with `VITE_FAKE_GOOGLE=true` and Picker and the Sheets API are faked too, so the whole onboarding ladder and the grading screen work with no Google account.
+Set `VITE_FAKE_GOOGLE=true` and the Google popup, Picker and the Sheets API are all faked, so the whole onboarding ladder and the grading screen work with no Google account or OAuth client.
 
 ```sh
 # .env.local
-VITE_AUTH_BROKER_URL=http://localhost:8787
 VITE_FAKE_GOOGLE=true
-```
-
-```sh
-npm run mock-broker   # http://localhost:8787 — control panel at /
-npm run dev           # http://localhost:5173
 ```
 
 Open `http://localhost:5173/?emptyRoster` to start with no students and click through the add-roster flow.
 
-The consent page offers Continue, Cancel (`?error=access_denied`), a wrong-account choice (`google_account_mismatch`), and a simulated Google failure. The control panel can mark the grant `invalid_grant` or `admin_policy_enforced`, end sessions, or reset. State is in memory; restart to start over.
+The fake popup is a browser confirm: OK grants a token, Cancel simulates closing the Google window. Fake tokens last five minutes, so the hourly re-authorization comes up during a click-through. The fake grade book is in memory; reload to start over.
 
-Neither the mock nor the fake ships: `VITE_FAKE_GOOGLE` is a build-time constant, and `npm run build` with it unset drops `src/lib/fake-google.ts` from the bundle.
+The fake never ships: `VITE_FAKE_GOOGLE` is a build-time constant, and `npm run build` with it unset drops `src/lib/fake-google.ts` from the bundle.
 
 ## How authorization works
 
-1. **Sign in** — `POST /auth/google/start` returns a Google URL; the page navigates there and comes back with an `HttpOnly` session cookie on `.teacher.dev`.
-2. **Connect Google Drive** — `POST /oauth/google/start`, same shape. Google asks for `drive.file` only. The broker stores the refresh token; the connected account must match the signed-in one.
-3. **Mint a token** — `POST /oauth/google/token` returns a short-lived access token plus Picker `appId`/`apiKey`. The broker caches tokens with more than five minutes left, and the app additionally caches the result in memory until a minute before expiry, so the 60/hour/user mint limit is never approached in normal use.
-4. **Use it** — Google Picker and the Sheets API are called directly from the browser with the bearer token. The broker never sees file content.
+1. **Connect Google** — the first click calls `requestAccessToken()` on a GIS token client. Google's popup asks for `drive.file` (plus `openid email`, so the app knows which account it is working with) and hands back an access token that lasts about an hour. The app keeps it in memory and remembers only the account's email, as the `login_hint` for later popups.
+2. **Use it** — Google Picker and the Sheets API are called directly from the browser with the bearer token.
+3. **Renew it** — there is no refresh token. When the token is within a minute of expiry, the next click that needs Google opens the popup again. Consent was already given, so it closes by itself, but it is still a popup: browsers only allow it during a click, so every handler calls `authorize()` before awaiting anything else, and nothing talks to Google on page load. A returning teacher therefore lands on the setup list with **Start grading** as the one remaining step.
 
-Every broker call sends `credentials: "include"` and, on POST/DELETE, an `X-Requested-With` header (the broker's CSRF defence). See `src/lib/broker.ts`.
+`prepareAuthorization()` loads the GIS script on page load so the popup can open synchronously inside that first click. Closing the popup or pressing Cancel shows a quiet notice; a blocked popup, `admin_policy_enforced`, or a refused `drive.file` scope shows an error. A Sheets 401 drops the cached token so the next click fetches a new one. See `src/lib/google.ts`.
 
-Failures during the Google redirect come back as `?error=<code>` on the app URL. `access_denied` (the user pressed Cancel) is shown quietly; anything else shows a retry banner. A connection whose refresh token has died shows as `status: "invalid"` and the setup screen offers **Reconnect Google Drive**.
+## Google Cloud setup
 
-The Picker API key on the broker's project must allow the app origins under its website restrictions (`*.teacher.dev/*` plus `teacher.dev/*`, and `localhost:5173/*` for development). The app origin does **not** need to be an Authorized JavaScript origin on the OAuth client, and the app deliberately does not call `setOrigin()` on the Picker.
+1. **OAuth client** — a *Web application* client. Under **Authorized JavaScript origins**, list every origin that serves the app, exactly: `https://<slug>.teacher.dev`, any custom domain, each Vercel preview origin you want to sign in from, and `http://localhost:5173`. Wildcards are not accepted. Redirect URIs are not used.
+2. **Consent screen** — scopes `openid`, `email`, and `https://www.googleapis.com/auth/drive.file`. `drive.file` is non-sensitive, so no verification beyond publishing the app is required.
+3. **APIs** — enable the Google Sheets API and the Google Picker API in the same project. The app calls no Drive API endpoint directly.
+4. **Picker API key** — restrict it to the Google Picker API, with website restrictions for the same origins as step 1 (`https://<slug>.teacher.dev/*`, `http://localhost:5173/*`).
+5. **Project number** — from the project's Dashboard; it is `VITE_GOOGLE_APP_ID`.
+
+Do not serve the app with `Cross-Origin-Opener-Policy: same-origin`; it cuts the popup off from the page and the token never arrives. `same-origin-allow-popups` (or no header) is fine.
 
 ## Build the one spreadsheet template
 
@@ -152,10 +153,10 @@ npm run build
 
 ## Privacy and concurrency
 
-The Google access token is kept in memory only and is discarded on expiry, sign-out, and tab close. The refresh token never reaches the browser. The browser stores only the selected spreadsheet ID in local storage. Student data travels directly between the browser and Google.
+The Google access token is kept in memory only and is discarded on expiry, sign-out, and tab close. No refresh token exists. Local storage holds the connected account's email, spreadsheet IDs and names, and onboarding progress. Student data travels directly between the browser and Google.
 
-**Sign out** clears the broker session but leaves the Drive grant intact, so coming back is one Google click. **Switch grade book** only forgets the saved spreadsheet.
+**Sign out** forgets the token and everything this device remembers, but leaves the Drive grant with Google, so coming back is one Google click. Teachers revoke the grant from their Google Account's third-party access page. **Switch grade book** only forgets the saved spreadsheet.
 
-Setup is a five-step ladder — sign in, connect Drive, copy the template, pick the copy, start grading — and each step unlocks the next. Steps 1–2 come from the broker's connection state; steps 3–4 are remembered per device in local storage (the browser cannot observe the copy being made, so "Make a copy" marks step 3 done when pressed).
+Setup is a four-step ladder — connect Google, copy the template, pick the copy, start grading — and each step unlocks the next. Steps 1–3 are remembered per device in local storage (the browser cannot observe the copy being made, so "Make a copy" marks step 2 done when pressed).
 
 Writes are serialized across tabs in the same browser with the Web Locks API. Google Sheets does not offer a cross-device conditional upsert, so this app assumes one teacher is actively grading from one device at a time.
