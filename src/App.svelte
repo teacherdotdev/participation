@@ -17,11 +17,11 @@
   import RefreshCw from '@lucide/svelte/icons/refresh-cw'
   import X from '@lucide/svelte/icons/x'
   import BehaviorsEditor from './BehaviorsEditor.svelte'
+  import Tips from './Tips.svelte'
   import {
     authorize,
     clearAuthorization,
     GoogleAuthError,
-    hasFreshToken,
     missingGoogleConfig,
     missingTemplateConfig,
     pickSpreadsheet,
@@ -60,6 +60,7 @@
     loadSnapshot,
     pendingGrade,
     removePending,
+    renamePendingBehavior,
     saveSnapshot,
     type PendingGrade,
   } from './lib/local-copy'
@@ -213,25 +214,22 @@
     return latest
   }
 
-  // The Save button, and the background save after grading while a token is still fresh. With an
-  // expired token this opens Google's popup, so it has to start inside the click.
+  // The Save button: the only way grades reach the sheet. With an expired token this opens
+  // Google's popup, so it has to start inside the click.
   async function syncPending() {
     if (!gradebook || syncing) return
     const id = gradebook.id
     syncing = true
     resetMessages()
-    let again = false
     try {
       const token = await getToken()
       await flushPending(id, token)
-      again = pending.length > 0 // graded again while the write was in flight
     } catch (caught) {
       if (isUnreachableSheetError(caught)) forgetUnreachable(id, gradebook?.title ?? '')
       else handleFailure(caught)
     } finally {
       syncing = false
     }
-    if (again && hasFreshToken()) void syncPending()
   }
 
   async function connectGoogle() {
@@ -397,9 +395,9 @@
     behaviorsModal.showModal()
   }
 
-  // Every behavior edit changes the sheet's columns, so pending grades are written first, while
-  // they still match the columns, and the grade book is reloaded afterwards rather than guessed at.
-  // Returns whether the edit went through, so the row can settle.
+  // Every behavior edit changes the sheet's columns, so it works from a fresh load and the grade
+  // book is reloaded afterwards rather than guessed at. Queued grades are keyed by behavior name,
+  // so they wait for the Save button. Returns whether the edit went through, so the row can settle.
   async function editBehaviors(change: (current: Gradebook, token: string) => Promise<void>): Promise<boolean> {
     if (!gradebook || saving) return false
     saving = true
@@ -407,7 +405,7 @@
     const current = gradebook
     try {
       const token = await getToken()
-      await change(await flushPending(current.id, token), token)
+      await change(await loadGradebook(current.id, token), token)
       show(await loadGradebook(current.id, token))
       return true
     } catch (caught) {
@@ -421,7 +419,11 @@
 
   const onAddBehavior = (draft: BehaviorDraft) => editBehaviors((current, token) => addBehavior(current, draft, token))
   const onRenameBehavior = (index: number, draft: BehaviorDraft) =>
-    editBehaviors((current, token) => renameBehavior(current, index, draft, token))
+    editBehaviors(async (current, token) => {
+      const from = current.behaviors[index].name
+      await renameBehavior(current, index, draft, token)
+      pending = renamePendingBehavior(current.id, from, draft.name.trim().replace(/\s+/g, ' '))
+    })
   const onRemoveBehavior = (index: number) => editBehaviors((current, token) => removeBehavior(current, index, token))
   const onRestoreBehavior = (index: number) => editBehaviors((current, token) => restoreBehavior(current, index, token))
 
@@ -442,8 +444,8 @@
     if (draftGrades) draftGrades = draftGrades.map((grade, other) => (other === index ? !grade : grade))
   }
 
-  // Grades are kept on this device first, so a lapsed Google sign-in never blocks grading. With a
-  // fresh token the sheet catches up straight away; otherwise they wait for the Save button.
+  // Grades are kept on this device until the teacher presses Save, so a lapsed Google sign-in never
+  // blocks grading. The first-visit tips tell the teacher so.
   function saveGrade() {
     if (!gradebook || !selectedStudent || !draftGrades) return
     resetMessages()
@@ -456,7 +458,6 @@
     }
     modal.close()
     flashSaved(updated.name)
-    if (hasFreshToken()) void syncPending()
   }
 
   function toggleSwitcher() {
@@ -478,8 +479,8 @@
     switcherOpen = false
     if (id === gradebook?.id) return
     resetMessages()
-    // Without a token, switch to this device's copy rather than stopping for Google.
-    const cached = hasFreshToken() ? null : loadSnapshot(id)
+    // Switch to this device's copy rather than stopping for Google; Refresh reloads the sheet.
+    const cached = loadSnapshot(id)
     if (cached) {
       spreadsheet = { id, name: cached.title || name }
       rememberSpreadsheet(spreadsheet)
@@ -541,6 +542,7 @@
       <nav class="topbar-actions" aria-label="Grade book actions">
         <button
           class="nav-button save-button"
+          data-tip="tip-save"
           class:unsaved={pending.length}
           onclick={syncPending}
           disabled={syncing || !pending.length}
@@ -697,6 +699,7 @@
               class="student-card"
               class:just-saved={justSaved === student.name}
               class:unsaved={unsaved.has(student.name)}
+              data-tip={index === 0 ? 'tip-grade' : undefined}
               title={unsaved.has(student.name) ? student.name + ' (not saved to the sheet yet)' : student.name}
               onclick={() => editStudent(student)}
             >
@@ -733,6 +736,7 @@
         </section>
       {/if}
     </main>
+    <Tips />
     {#if error && !selectedStudent && !rosterOpen && !behaviorsOpen}
       <div class="toast" role="alert">
         <span class="toast-icon" aria-hidden="true">!</span>
