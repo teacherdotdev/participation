@@ -1,7 +1,6 @@
 // This device's copy of each grade book: the roster as last seen, and grades saved here that have
 // not reached the sheet yet. It keeps the roster on screen and grading working while the Google
-// token has lapsed; the teacher's Save click (or any save made while a token is still fresh)
-// writes the pending grades to the sheet. Like the sheet itself, it never leaves this device.
+// token has lapsed; only the teacher's Save click writes the pending grades to the sheet. Like the sheet itself, it never leaves this device.
 
 import { defaultGrades, todayIn } from './sheets'
 import type { Gradebook, Student } from './types'
@@ -82,6 +81,19 @@ export function addPending(id: string, entry: PendingGrade): PendingGrade[] {
 export function removePending(id: string, written: readonly PendingGrade[]): PendingGrade[] {
   const done = new Set(written.map((entry) => JSON.stringify(entry)))
   return setPending(id, getPending(id).filter((entry) => !done.has(JSON.stringify(entry))))
+}
+
+/** Follows a behavior rename, so queued grades still find their column when they are saved. */
+export function renamePendingBehavior(id: string, from: string, to: string): PendingGrade[] {
+  if (from === to) return getPending(id)
+  return setPending(
+    id,
+    getPending(id).map((entry) => {
+      if (!Object.hasOwn(entry.grades, from)) return entry
+      const { [from]: grade, ...rest } = entry.grades
+      return { ...entry, grades: { ...rest, [to]: grade } }
+    }),
+  )
 }
 
 /** Shows queued grades for the grade book's day on top of what the sheet (or snapshot) holds. */

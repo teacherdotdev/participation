@@ -7,6 +7,7 @@ const SHEET_NAME_KEY = 'participation-tracker.sheet-name'
 const RECENT_SHEETS_KEY = 'participation-tracker.recent-sheets'
 const TEMPLATE_COPIED_KEY = 'participation-tracker.template-copied'
 const ACCOUNT_KEY = 'participation-tracker.google-account'
+const SEEN_TIPS_KEY = 'participation-tracker.seen-tips'
 const RECENT_LIMIT = 8
 
 export interface RememberedSpreadsheet {
@@ -85,7 +86,21 @@ export function markTemplateCopied(): void {
   write(TEMPLATE_COPIED_KEY, 'true')
 }
 
+/** Ids of the first-visit tips this device has already shown. */
+export function getSeenTips(): string[] {
+  try {
+    const parsed: unknown = JSON.parse(read(SEEN_TIPS_KEY) || '[]')
+    return Array.isArray(parsed) ? parsed.filter((id): id is string => typeof id === 'string') : []
+  } catch {
+    return []
+  }
+}
+
+export function markTipsSeen(ids: string[]): void {
+  write(SEEN_TIPS_KEY, JSON.stringify([...new Set([...getSeenTips(), ...ids])]))
+}
+
 /** Signing out wipes what this device remembers, so the next teacher starts at step 1. */
 export function forgetEverything(): void {
-  for (const key of [SHEET_ID_KEY, SHEET_NAME_KEY, RECENT_SHEETS_KEY, TEMPLATE_COPIED_KEY, ACCOUNT_KEY]) write(key, null)
+  for (const key of [SHEET_ID_KEY, SHEET_NAME_KEY, RECENT_SHEETS_KEY, TEMPLATE_COPIED_KEY, ACCOUNT_KEY, SEEN_TIPS_KEY]) write(key, null)
 }
