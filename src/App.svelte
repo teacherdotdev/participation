@@ -3,6 +3,8 @@
   import ArrowLeftRight from '@lucide/svelte/icons/arrow-left-right'
   import ArrowUpRight from '@lucide/svelte/icons/arrow-up-right'
   import Check from '@lucide/svelte/icons/check'
+  import CloudCheck from '@lucide/svelte/icons/cloud-check'
+  import CloudUpload from '@lucide/svelte/icons/cloud-upload'
   import ListChecks from '@lucide/svelte/icons/list-checks'
   import ChevronDown from '@lucide/svelte/icons/chevron-down'
   import CopyPlus from '@lucide/svelte/icons/copy-plus'
@@ -19,6 +21,7 @@
     authorize,
     clearAuthorization,
     GoogleAuthError,
+    hasFreshToken,
     missingGoogleConfig,
     missingTemplateConfig,
     pickSpreadsheet,
@@ -47,8 +50,19 @@
     renameBehavior,
     renameSpreadsheet,
     restoreBehavior,
-    updateGrade,
+    saveGrades,
   } from './lib/sheets'
+  import {
+    addPending,
+    applyPending,
+    forgetLocalCopies,
+    getPending,
+    loadSnapshot,
+    pendingGrade,
+    removePending,
+    saveSnapshot,
+    type PendingGrade,
+  } from './lib/local-copy'
   import { activeBehaviors, totalFor, type BehaviorDraft, type Gradebook, type Grades, type Student } from './lib/types'
 
   // Email of the Google account connected on this device. There is no server session: a token is
@@ -72,6 +86,10 @@
   let draftGrades: Grades | null = null
   let loading = false
   let saving = false
+  // Grades saved on this device that the sheet does not have yet; the Save button writes them.
+  let pending: PendingGrade[] = []
+  let syncing = false
+  let confirmingSignOut = false
   let notice = ''
   let error = ''
   let justSaved = '' // student name whose card is pulsing after a save
@@ -88,6 +106,9 @@
     spreadsheet = getRememberedSpreadsheet()
     templateCopied = hasCopiedTemplate()
     account = getRememberedAccount()
+    // The roster this device last saw opens without Google, so grading never waits on a popup.
+    const cached = spreadsheet && loadSnapshot(spreadsheet.id)
+    if (cached) show(cached)
     prepareAuthorization()
     syncFullscreen()
     document.addEventListener('webkitfullscreenchange', syncFullscreen)
@@ -113,6 +134,8 @@
   $: active = gradebook ? activeBehaviors(gradebook.behaviors) : []
   $: classPoints = gradebook?.students.reduce((sum, student) => sum + totalFor(student.grades, gradebook!.behaviors), 0) ?? 0
   $: possiblePoints = (gradebook?.students.length ?? 0) * active.length
+  $: unsaved = new Set(pending.filter((entry) => entry.dayKey === gradebook?.dayKey).map((entry) => entry.name))
+  $: if (gradebook) saveSnapshot(gradebook)
   $: rosterNames = parseRosterNames(rosterText, gradebook?.students.map((student) => student.name) ?? [])
   // Onboarding is a strict ladder: a step is only actionable once every step above it is done.
   $: connected = !!account
@@ -124,6 +147,7 @@
   function resetMessages() {
     notice = ''
     error = ''
+    confirmingSignOut = false
   }
 
   function showError(caught: unknown) {
@@ -144,7 +168,11 @@
       notice = caught.message
       return
     }
-    if (isAuthorizationError(caught)) clearAuthorization()
+    if (isAuthorizationError(caught)) {
+      clearAuthorization()
+      error = 'Your Google sign-in expired. Try again to reconnect.'
+      return
+    }
     showError(caught)
   }
 
@@ -154,7 +182,56 @@
     forgetSpreadsheet(id)
     recent = getRecentSpreadsheets()
     if (spreadsheet?.id === id) spreadsheet = null
+    // Close this device's copy too, so the picker step is on screen. Unsaved grades stay stored
+    // and come back if the teacher picks the same sheet again.
+    if (gradebook?.id === id) {
+      gradebook = null
+      pending = []
+    }
     error = `Google won’t let this app open “${name || 'that grade book'}”. Choose it again in Google’s file picker to give the app access.`
+  }
+
+  // Puts a grade book on screen with this device's unsaved grades on top.
+  function show(next: Gradebook) {
+    pending = getPending(next.id)
+    gradebook = applyPending(next, pending)
+  }
+
+  // Writes this device's pending grades for `id` to the sheet and shows the sheet as it now stands.
+  // Returns the freshly loaded grade book, so a caller about to change the sheet's columns works
+  // from the sheet's current layout.
+  async function flushPending(id: string, token: string): Promise<Gradebook> {
+    const batch = getPending(id)
+    const fresh = await loadGradebook(id, token)
+    await saveGrades(fresh, batch, token)
+    const remaining = removePending(id, batch)
+    const latest = applyPending(fresh, [...batch, ...remaining])
+    if (gradebook?.id === id) {
+      pending = remaining
+      gradebook = latest
+    }
+    return latest
+  }
+
+  // The Save button, and the background save after grading while a token is still fresh. With an
+  // expired token this opens Google's popup, so it has to start inside the click.
+  async function syncPending() {
+    if (!gradebook || syncing) return
+    const id = gradebook.id
+    syncing = true
+    resetMessages()
+    let again = false
+    try {
+      const token = await getToken()
+      await flushPending(id, token)
+      again = pending.length > 0 // graded again while the write was in flight
+    } catch (caught) {
+      if (isUnreachableSheetError(caught)) forgetUnreachable(id, gradebook?.title ?? '')
+      else handleFailure(caught)
+    } finally {
+      syncing = false
+    }
+    if (again && hasFreshToken()) void syncPending()
   }
 
   async function connectGoogle() {
@@ -176,9 +253,16 @@
   // Forgets the token and this device's setup. The Drive grant stays with Google, so coming back
   // is one click; revoking it is done from the Google Account page.
   function endSession() {
+    if (pending.length && !confirmingSignOut) {
+      error = `${pending.length} ${pending.length === 1 ? 'grade has' : 'grades have'} not been saved to your sheet. Save first, or press Sign out again to discard ${pending.length === 1 ? 'it' : 'them'}.`
+      confirmingSignOut = true
+      return
+    }
     resetMessages()
     clearAuthorization()
     forgetEverything()
+    forgetLocalCopies()
+    pending = []
     gradebook = null
     pendingGradebook = null
     selectedStudent = null
@@ -193,11 +277,12 @@
     loading = true
     try {
       const token = await getToken()
-      gradebook = await loadGradebook(id, token)
+      const loaded = await loadGradebook(id, token)
+      show(loaded)
       // The title is the Drive file name, so a rename in Google Sheets shows up here on the next
       // load; keep the switcher's recent list in step with it.
-      if (gradebook.title && gradebook.title !== spreadsheet?.name) {
-        spreadsheet = { id, name: gradebook.title }
+      if (loaded.title && loaded.title !== spreadsheet?.name) {
+        spreadsheet = { id, name: loaded.title }
         rememberSpreadsheet(spreadsheet)
       }
     } catch (caught) {
@@ -237,7 +322,7 @@
     if (!spreadsheet) return
     if (pendingGradebook) {
       resetMessages()
-      gradebook = pendingGradebook
+      show(pendingGradebook)
       pendingGradebook = null
       return
     }
@@ -296,7 +381,7 @@
     try {
       const token = await getToken()
       await addStudents(id, rosterNames, token)
-      gradebook = await loadGradebook(id, token)
+      show(await loadGradebook(id, token))
       rosterModal.close()
     } catch (caught) {
       handleFailure(caught)
@@ -312,8 +397,9 @@
     behaviorsModal.showModal()
   }
 
-  // Every behavior edit changes the sheet's columns, so the grade book is reloaded afterwards
-  // rather than guessed at. Returns whether the edit went through, so the row can settle.
+  // Every behavior edit changes the sheet's columns, so pending grades are written first, while
+  // they still match the columns, and the grade book is reloaded afterwards rather than guessed at.
+  // Returns whether the edit went through, so the row can settle.
   async function editBehaviors(change: (current: Gradebook, token: string) => Promise<void>): Promise<boolean> {
     if (!gradebook || saving) return false
     saving = true
@@ -321,8 +407,8 @@
     const current = gradebook
     try {
       const token = await getToken()
-      await change(current, token)
-      gradebook = await loadGradebook(current.id, token)
+      await change(await flushPending(current.id, token), token)
+      show(await loadGradebook(current.id, token))
       return true
     } catch (caught) {
       handleFailure(caught)
@@ -356,30 +442,21 @@
     if (draftGrades) draftGrades = draftGrades.map((grade, other) => (other === index ? !grade : grade))
   }
 
-  async function saveGrade() {
+  // Grades are kept on this device first, so a lapsed Google sign-in never blocks grading. With a
+  // fresh token the sheet catches up straight away; otherwise they wait for the Save button.
+  function saveGrade() {
     if (!gradebook || !selectedStudent || !draftGrades) return
-    saving = true
     resetMessages()
     const original = selectedStudent
     const updated: Student = { ...original, grades: [...draftGrades] }
-
-    try {
-      const token = await getToken()
-      updated.row = await updateGrade(gradebook, updated, token)
-      gradebook = {
-        ...gradebook,
-        students: gradebook.students.map((student) =>
-          student.name === original.name ? updated : student,
-        ),
-      }
-      modal.close()
-      flashSaved(updated.name)
-    } catch (caught) {
-      handleFailure(caught)
-      if (!gradebook) modal.close()
-    } finally {
-      saving = false
+    pending = addPending(gradebook.id, pendingGrade(gradebook, updated))
+    gradebook = {
+      ...gradebook,
+      students: gradebook.students.map((student) => (student.name === original.name ? updated : student)),
     }
+    modal.close()
+    flashSaved(updated.name)
+    if (hasFreshToken()) void syncPending()
   }
 
   function toggleSwitcher() {
@@ -401,13 +478,21 @@
     switcherOpen = false
     if (id === gradebook?.id) return
     resetMessages()
+    // Without a token, switch to this device's copy rather than stopping for Google.
+    const cached = hasFreshToken() ? null : loadSnapshot(id)
+    if (cached) {
+      spreadsheet = { id, name: cached.title || name }
+      rememberSpreadsheet(spreadsheet)
+      show(cached)
+      return
+    }
     loading = true
     try {
       const token = await getToken()
       const next = await loadGradebook(id, token)
       spreadsheet = { id, name: next.title || name }
       rememberSpreadsheet(spreadsheet)
-      gradebook = next
+      show(next)
     } catch (caught) {
       if (isUnreachableSheetError(caught)) forgetUnreachable(id, name)
       else handleFailure(caught)
@@ -454,6 +539,22 @@
 
     {#if gradebook}
       <nav class="topbar-actions" aria-label="Grade book actions">
+        <button
+          class="nav-button save-button"
+          class:unsaved={pending.length}
+          onclick={syncPending}
+          disabled={syncing || !pending.length}
+          title={pending.length ? 'Save to your Google Sheet' : 'Everything is saved to your Google Sheet'}
+        >
+          {#if syncing}
+            <RefreshCw size={18} class="spin" aria-hidden="true" /><span>Saving…</span>
+          {:else if pending.length}
+            <CloudUpload size={18} aria-hidden="true" /><span>Save to sheet</span>
+            <b class="save-count" aria-label={pending.length + ' unsaved'}>{pending.length}</b>
+          {:else}
+            <CloudCheck size={18} aria-hidden="true" /><span>Saved</span>
+          {/if}
+        </button>
         <a class="nav-button" href={sheetUrl(gradebook.id)} target="_blank" rel="noreferrer" title="Open sheet in Google Sheets">
           <span>Open sheet</span><ArrowUpRight size={18} aria-hidden="true" />
         </a>
@@ -536,8 +637,8 @@
             {#if fullscreen}<Minimize size={20} aria-hidden="true" />{:else}<Maximize size={20} aria-hidden="true" />{/if}
           </button>
         {/if}
-        <button class="nav-button" onclick={endSession} disabled={loading} title="Sign out">
-          <LogOut size={18} aria-hidden="true" /><span>Sign out</span>
+        <button class="nav-button" onclick={endSession} disabled={loading} title={confirmingSignOut ? 'Discard unsaved grades and sign out' : 'Sign out'}>
+          <LogOut size={18} aria-hidden="true" /><span>{confirmingSignOut ? 'Discard and sign out' : 'Sign out'}</span>
         </button>
       </nav>
     {:else if account}
@@ -592,7 +693,13 @@
       {#if gradebook.students.length}
         <section class="student-grid" aria-label="Student participation">
           {#each gradebook.students as student, index (student.name)}
-            <button class="student-card" class:just-saved={justSaved === student.name} title={student.name} onclick={() => editStudent(student)}>
+            <button
+              class="student-card"
+              class:just-saved={justSaved === student.name}
+              class:unsaved={unsaved.has(student.name)}
+              title={unsaved.has(student.name) ? student.name + ' (not saved to the sheet yet)' : student.name}
+              onclick={() => editStudent(student)}
+            >
               <span class={'initials color-' + ((index % 5) + 1)}>{student.initials}</span>
               <span class="student-details">
                 <span class="student-name">{student.name}</span>
@@ -608,6 +715,7 @@
                 {totalFor(student.grades, gradebook.behaviors)}<small>/{active.length}</small>
               </span>
               <span class="chevron" aria-hidden="true">›</span>
+              {#if unsaved.has(student.name)}<span class="sr-only">Not saved to the sheet yet</span>{/if}
             </button>
           {/each}
         </section>
@@ -877,9 +985,7 @@
 
       <footer class="modal-actions">
         <button class="button secondary" value="cancel" disabled={saving}>Cancel</button>
-        <button class="button primary" type="button" onclick={saveGrade} disabled={saving}>
-          {saving ? 'Saving…' : 'Save grade'}
-        </button>
+        <button class="button primary" type="button" onclick={saveGrade}>Save grade</button>
       </footer>
     </form>
   {/if}

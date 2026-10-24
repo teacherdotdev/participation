@@ -7,8 +7,9 @@ import {
   fakeRenameBehavior,
   fakeRenameSpreadsheet,
   fakeRestoreBehavior,
-  fakeUpdateGrade,
+  fakeSaveGrades,
 } from './fake-google'
+import type { PendingGrade } from './local-copy'
 import {
   activeBehaviors,
   behaviorHeader,
@@ -148,7 +149,7 @@ function dateSerial({ year, month, day }: { year: number; month: number; day: nu
   return Math.floor(Date.UTC(year, month - 1, day) / 86_400_000) + 25_569
 }
 
-function todayIn(timeZone: string) {
+export function todayIn(timeZone: string) {
   const parts = dateParts(timeZone)
   const instant = new Date(Date.UTC(parts.year, parts.month - 1, parts.day, 12))
   return {
@@ -294,34 +295,61 @@ export async function loadGradebook(spreadsheetId: string, token: string): Promi
   }
 }
 
-async function writeGrade(gradebook: Gradebook, student: Student, token: string): Promise<number> {
-  const [year, month, day] = gradebook.dayKey.split('-').map(Number)
-  const values = rowValues(student.name, dateSerial({ year, month, day }), student.grades, gradebook.behaviors)
-
-  if (!student.row) {
-    const row = await appendRows(gradebook.id, token, gradebook.behaviors.length, [values])
-    if (!row) throw new Error('The grade was saved, but its row could not be located. Refresh and try again.')
-    return row
-  }
-
-  const lastColumn = FIRST_BEHAVIOR_COLUMN + gradebook.behaviors.length - 1
-  const range = encodeURIComponent(`'${DAY_TAB}'!A${student.row}:${columnLetter(lastColumn)}${student.row}`)
-  await googleFetch(
-    `${API}/${encodeURIComponent(gradebook.id)}/values/${range}?valueInputOption=RAW`,
-    token,
-    { method: 'PUT', body: JSON.stringify({ majorDimension: 'ROWS', values: [values] }) },
-  )
-  return student.row
+function serialFor(dayKey: string): number {
+  const [year, month, day] = dayKey.split('-').map(Number)
+  return dateSerial({ year, month, day })
 }
 
-export function updateGrade(gradebook: Gradebook, student: Student, token: string): Promise<number> {
-  if (FAKE_GOOGLE) return fakeUpdateGrade(student)
-  if ('locks' in navigator) {
-    return navigator.locks.request(`participation-gradebook:${gradebook.id}`, () =>
-      writeGrade(gradebook, student, token),
-    )
+/** Writes grades saved on this device into "Day Records". Rows are matched by name and date, and
+ *  columns by behavior name; a behavior the grade does not mention, or an archived one, is left as
+ *  the sheet has it. A student with no row for that day gets one appended. */
+async function writeGrades(gradebook: Gradebook, entries: readonly PendingGrade[], token: string): Promise<void> {
+  const id = encodeURIComponent(gradebook.id)
+  const keys = await googleFetch<ValueRange>(
+    `${API}/${id}/values/${encodeURIComponent(`'${DAY_TAB}'!A2:B`)}?valueRenderOption=UNFORMATTED_VALUE`,
+    token,
+  )
+  const rows = new Map<string, number>()
+  ;(keys.values ?? []).forEach((row, index) => {
+    const name = String(row[0] ?? '').trim()
+    if (name) rows.set(`${name}\n${Number(row[1])}`, index + 2)
+  })
+
+  const lastColumn = columnLetter(FIRST_BEHAVIOR_COLUMN + gradebook.behaviors.length - 1)
+  const updates: ValueRange[] = []
+  const appends: unknown[][] = []
+  for (const entry of entries) {
+    const serial = serialFor(entry.dayKey)
+    // null cells are skipped by the Sheets API, so they keep whatever the sheet already has.
+    const values = [
+      entry.name,
+      serial,
+      ...gradebook.behaviors.map((behavior) =>
+        behavior.archived || !Object.hasOwn(entry.grades, behavior.name) ? null : entry.grades[behavior.name] ? 'Yes' : 'No',
+      ),
+    ]
+    const row = rows.get(`${entry.name}\n${serial}`)
+    if (row) updates.push({ range: `'${DAY_TAB}'!A${row}:${lastColumn}${row}`, values: [values] })
+    else appends.push(values)
   }
-  return writeGrade(gradebook, student, token)
+
+  if (updates.length) {
+    await googleFetch(`${API}/${id}/values:batchUpdate`, token, {
+      method: 'POST',
+      body: JSON.stringify({ valueInputOption: 'RAW', data: updates }),
+    })
+  }
+  if (appends.length) await appendRows(gradebook.id, token, gradebook.behaviors.length, appends)
+}
+
+/** Writes pending grades. `gradebook` should be freshly loaded, so its columns match the sheet. */
+export function saveGrades(gradebook: Gradebook, entries: readonly PendingGrade[], token: string): Promise<void> {
+  if (!entries.length) return Promise.resolve()
+  if (FAKE_GOOGLE) return fakeSaveGrades(entries)
+  if ('locks' in navigator) {
+    return navigator.locks.request(`participation-gradebook:${gradebook.id}`, () => writeGrades(gradebook, entries, token))
+  }
+  return writeGrades(gradebook, entries, token)
 }
 
 /** Renames the spreadsheet. The Sheets title is the Drive file name, and drive.file covers metadata
