@@ -4,7 +4,7 @@ import { defineConfig } from 'vite'
 // https://vite.dev/config/
 export default defineConfig({
   plugins: [svelte()],
-  // The auth broker allowlists exactly http://localhost:5173. Fail loudly instead of drifting to
-  // 5174 when the port is busy, which would surface as 403 origin_not_allowed.
+  // The OAuth client lists exactly http://localhost:5173 as an Authorized JavaScript origin. Fail
+  // loudly instead of drifting to 5174 when the port is busy, which Google rejects as origin_mismatch.
   server: { port: 5173, strictPort: true },
 })

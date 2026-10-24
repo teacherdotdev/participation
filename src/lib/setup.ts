@@ -1,10 +1,12 @@
-// What this device remembers about onboarding. Nothing here is sensitive: spreadsheet IDs and
-// names, and whether the teacher has been through the "make a copy" step.
+// What this device remembers about onboarding: the connected Google account's email (used as a
+// login hint so the popup skips the account chooser), spreadsheet IDs and names, and whether the
+// teacher has been through the "make a copy" step. No tokens.
 
 const SHEET_ID_KEY = 'participation-tracker.sheet-id'
 const SHEET_NAME_KEY = 'participation-tracker.sheet-name'
 const RECENT_SHEETS_KEY = 'participation-tracker.recent-sheets'
 const TEMPLATE_COPIED_KEY = 'participation-tracker.template-copied'
+const ACCOUNT_KEY = 'participation-tracker.google-account'
 const RECENT_LIMIT = 8
 
 export interface RememberedSpreadsheet {
@@ -56,6 +58,15 @@ export function getRecentSpreadsheets(): RememberedSpreadsheet[] {
   }
 }
 
+/** Email of the Google account last connected on this device, or '' before the first connect. */
+export function getRememberedAccount(): string {
+  return read(ACCOUNT_KEY)
+}
+
+export function rememberAccount(email: string): void {
+  write(ACCOUNT_KEY, email)
+}
+
 export function hasCopiedTemplate(): boolean {
   return read(TEMPLATE_COPIED_KEY) === 'true'
 }
@@ -66,5 +77,5 @@ export function markTemplateCopied(): void {
 
 /** Signing out wipes what this device remembers, so the next teacher starts at step 1. */
 export function forgetEverything(): void {
-  for (const key of [SHEET_ID_KEY, SHEET_NAME_KEY, RECENT_SHEETS_KEY, TEMPLATE_COPIED_KEY]) write(key, null)
+  for (const key of [SHEET_ID_KEY, SHEET_NAME_KEY, RECENT_SHEETS_KEY, TEMPLATE_COPIED_KEY, ACCOUNT_KEY]) write(key, null)
 }
