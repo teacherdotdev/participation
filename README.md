@@ -47,7 +47,7 @@ The fake never ships: `VITE_FAKE_GOOGLE` is a build-time constant, and `npm run 
 2. **Use it** — Google Picker and the Sheets API are called directly from the browser with the bearer token.
 3. **Renew it** — there is no refresh token. When the token is within a minute of expiry, the next click that needs Google opens the popup again. Consent was already given, so it closes by itself, but it is still a popup: browsers only allow it during a click, so every handler calls `authorize()` before awaiting anything else, and nothing talks to Google on page load. A returning teacher therefore lands on the setup list with **Start grading** as the one remaining step.
 
-`prepareAuthorization()` loads the GIS script on page load so the popup can open synchronously inside that first click. Closing the popup or pressing Cancel shows a quiet notice; a blocked popup, `admin_policy_enforced`, or a refused `drive.file` scope shows an error. A Sheets 401 drops the cached token so the next click fetches a new one. See `src/lib/google.ts`.
+`prepareAuthorization()` loads the GIS script on page load so the popup can open synchronously inside that first click. Closing the popup or pressing Cancel shows a quiet notice; a blocked popup, `admin_policy_enforced`, or a refused `drive.file` scope shows an error. A Sheets 401 drops the cached token so the next click fetches a new one. A Sheets 404 on a remembered grade book means `drive.file` does not cover it (it was picked under another OAuth client, or trashed): the app forgets it and asks the teacher to pick it again, which grants access. See `src/lib/google.ts`.
 
 ## Google Cloud setup
 

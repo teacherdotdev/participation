@@ -32,6 +32,7 @@
     hasCopiedTemplate,
     markTemplateCopied,
     forgetEverything,
+    forgetSpreadsheet,
     rememberSpreadsheet,
     type RememberedSpreadsheet,
   } from './lib/setup'
@@ -39,6 +40,7 @@
     addBehavior,
     addStudents,
     isAuthorizationError,
+    isUnreachableSheetError,
     loadGradebook,
     parseRosterNames,
     removeBehavior,
@@ -146,6 +148,15 @@
     showError(caught)
   }
 
+  // A remembered sheet Google will not open is forgotten, which puts "Pick your copy" back in
+  // front of the teacher; picking it again grants this app access to it.
+  function forgetUnreachable(id: string, name: string) {
+    forgetSpreadsheet(id)
+    recent = getRecentSpreadsheets()
+    if (spreadsheet?.id === id) spreadsheet = null
+    error = `Google won’t let this app open “${name || 'that grade book'}”. Choose it again in Google’s file picker to give the app access.`
+  }
+
   async function connectGoogle() {
     resetMessages()
     loading = true
@@ -190,7 +201,8 @@
         rememberSpreadsheet(spreadsheet)
       }
     } catch (caught) {
-      handleFailure(caught)
+      if (isUnreachableSheetError(caught)) forgetUnreachable(id, spreadsheet?.id === id ? spreadsheet.name : '')
+      else handleFailure(caught)
     } finally {
       loading = false
     }
@@ -397,7 +409,8 @@
       rememberSpreadsheet(spreadsheet)
       gradebook = next
     } catch (caught) {
-      handleFailure(caught)
+      if (isUnreachableSheetError(caught)) forgetUnreachable(id, name)
+      else handleFailure(caught)
     } finally {
       loading = false
     }
